@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import List
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse
@@ -11,7 +12,10 @@ from starlette.background import BackgroundTask
 import uvicorn
 
 
-app = FastAPI(title="Chef Ibra Studio")
+app = FastAPI(
+    title="Chef Ibra Studio",
+    version="2.1.0",
+)
 
 
 # ============================================================
@@ -90,7 +94,7 @@ def health():
         "status": "online",
         "service": "Chef Ibra Studio",
         "engine": "FFmpeg",
-        "version": "2.0",
+        "version": "2.1.0",
         "message": "Video rendering engine ready",
     }
 
@@ -105,7 +109,7 @@ def info():
         "service": "Chef Ibra Studio",
         "engine": "FFmpeg",
         "input": {
-            "images": "multiple",
+            "images": "multiple files",
             "audio": "one file",
         },
         "output": {
@@ -119,13 +123,13 @@ def info():
 
 
 # ============================================================
-# MOTEUR DE RENDU
+# RENDU VIDÉO
 # ============================================================
 
 @app.post("/render")
 async def render_video(
     audio: UploadFile = File(...),
-    images: list[UploadFile] = File(...),
+    images: List[UploadFile] = File(...),
     duration: float = Form(0),
 ):
     workdir = tempfile.mkdtemp(
@@ -159,7 +163,7 @@ async def render_video(
         }
 
         # ----------------------------------------------------
-        # SAUVEGARDE AUDIO
+        # AUDIO
         # ----------------------------------------------------
 
         audio_name = (
@@ -194,19 +198,14 @@ async def render_video(
             audio_path
         )
 
-        # Si aucune durée n'est donnée,
-        # utiliser automatiquement celle de l'audio.
-
         if duration <= 0:
             duration = audio_duration
-
-        # Ne jamais dépasser l'audio.
 
         if duration > audio_duration:
             duration = audio_duration
 
         # ----------------------------------------------------
-        # SAUVEGARDE DES IMAGES
+        # IMAGES
         # ----------------------------------------------------
 
         image_paths = []
@@ -225,7 +224,15 @@ async def render_video(
             )
 
             if extension not in allowed_extensions:
-                extension = ".jpg"
+                cleanup_directory(workdir)
+
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Format d'image non autorisé : "
+                        f"{extension}"
+                    ),
+                }
 
             image_path = os.path.join(
                 workdir,
@@ -242,7 +249,7 @@ async def render_video(
             )
 
         # ----------------------------------------------------
-        # DURÉE DE CHAQUE IMAGE
+        # DURÉE PAR IMAGE
         # ----------------------------------------------------
 
         image_count = len(
@@ -254,16 +261,18 @@ async def render_video(
         )
 
         if scene_duration < 0.5:
+            cleanup_directory(workdir)
+
             return {
                 "status": "error",
                 "message": (
-                    "La durée est trop courte "
-                    "pour autant d'images."
+                    "La durée audio est trop courte "
+                    "pour le nombre d'images."
                 ),
             }
 
         # ----------------------------------------------------
-        # CONSTRUCTION DE LA COMMANDE FFMPEG
+        # COMMANDE FFMPEG
         # ----------------------------------------------------
 
         command = [
@@ -271,9 +280,10 @@ async def render_video(
             "-y",
         ]
 
-        # Chaque image devient une petite séquence vidéo.
+        # Ajout des images
 
         for image_path in image_paths:
+
             command.extend(
                 [
                     "-loop",
@@ -285,7 +295,7 @@ async def render_video(
                 ]
             )
 
-        # Audio en dernier input.
+        # Ajout audio
 
         audio_input_index = image_count
 
@@ -297,7 +307,7 @@ async def render_video(
         )
 
         # ----------------------------------------------------
-        # FILTRES VIDÉO
+        # FILTRES
         # ----------------------------------------------------
 
         filters = []
@@ -345,7 +355,7 @@ async def render_video(
         )
 
         # ----------------------------------------------------
-        # FICHIER FINAL
+        # SORTIE
         # ----------------------------------------------------
 
         output_path = os.path.join(
@@ -409,14 +419,8 @@ async def render_video(
             command
         )
 
-        # ----------------------------------------------------
-        # ERREUR FFmpeg
-        # ----------------------------------------------------
-
         if code != 0:
-            cleanup_directory(
-                workdir
-            )
+            cleanup_directory(workdir)
 
             return {
                 "status": "error",
@@ -425,21 +429,18 @@ async def render_video(
             }
 
         # ----------------------------------------------------
-        # VÉRIFICATION DU FICHIER
+        # VÉRIFICATION
         # ----------------------------------------------------
 
         if not os.path.exists(
             output_path
         ):
-            cleanup_directory(
-                workdir
-            )
+            cleanup_directory(workdir)
 
             return {
                 "status": "error",
                 "message": (
-                    "La vidéo finale "
-                    "n'a pas été créée."
+                    "La vidéo finale n'a pas été créée."
                 ),
             }
 
@@ -448,9 +449,7 @@ async def render_video(
         )
 
         if file_size <= 0:
-            cleanup_directory(
-                workdir
-            )
+            cleanup_directory(workdir)
 
             return {
                 "status": "error",
@@ -460,7 +459,7 @@ async def render_video(
             }
 
         # ----------------------------------------------------
-        # RETOUR DE LA VRAIE VIDÉO
+        # RETOUR DU MP4
         # ----------------------------------------------------
 
         cleanup = BackgroundTask(
@@ -477,9 +476,7 @@ async def render_video(
 
     except Exception as error:
 
-        cleanup_directory(
-            workdir
-        )
+        cleanup_directory(workdir)
 
         return {
             "status": "error",
@@ -505,4 +502,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=port,
-    )
+)
