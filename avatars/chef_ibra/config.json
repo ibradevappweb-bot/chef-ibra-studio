@@ -1,8 +1,0 @@
-{
-  "id": "chef_ibra",
-  "name": "Chef Ibra",
-  "image": "avatar.png",
-  "engine": "musetalk",
-  "format": "9:16",
-  "fps": 25
-}
