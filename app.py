@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse
@@ -30,37 +31,39 @@ async def render_video(
 
     try:
         # Vérification de la durée
-        if duration < 1:
+        if duration <= 0:
             return {
                 "status": "error",
-                "message": "Duration must be at least 1 second",
+                "message": "Duration must be greater than 0",
             }
 
-        if duration > 600:
-            return {
-                "status": "error",
-                "message": "Duration cannot exceed 600 seconds",
-            }
+        # Nom original de l'image
+        original_name = image.filename or "image.jpg"
 
-        # Récupération des extensions
-        image_extension = os.path.splitext(image.filename or "")[1].lower()
-        audio_extension = os.path.splitext(audio.filename or "")[1].lower()
+        # Extension du fichier
+        extension = Path(original_name).suffix.lower()
 
-        # Extensions par défaut
-        if not image_extension:
-            image_extension = ".img"
+        # Extensions autorisées
+        allowed_extensions = {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".webp",
+            ".avif",
+        }
 
-        if not audio_extension:
-            audio_extension = ".audio"
+        if extension not in allowed_extensions:
+            extension = ".jpg"
 
+        # Chemins temporaires
         image_path = os.path.join(
             workdir,
-            "input_image" + image_extension,
+            "input_image" + extension,
         )
 
         audio_path = os.path.join(
             workdir,
-            "input_audio" + audio_extension,
+            "input_audio.mp3",
         )
 
         output_path = os.path.join(
@@ -69,63 +72,78 @@ async def render_video(
         )
 
         # Sauvegarde de l'image
-        with open(image_path, "wb") as f:
-            shutil.copyfileobj(image.file, f)
+        with open(image_path, "wb") as image_file:
+            shutil.copyfileobj(
+                image.file,
+                image_file,
+            )
 
         # Sauvegarde de l'audio
-        with open(audio_path, "wb") as f:
-            shutil.copyfileobj(audio.file, f)
+        with open(audio_path, "wb") as audio_file:
+            shutil.copyfileobj(
+                audio.file,
+                audio_file,
+            )
 
         # Commande FFmpeg
+        #
+        # IMPORTANT :
+        # Nous n'utilisons plus -loop.
+        #
+        # L'image est transformée en une image vidéo
+        # puis tpad maintient la dernière image
+        # pendant toute la durée demandée.
+
+        video_filter = (
+            "scale=1080:1920:"
+            "force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:"
+            "(ow-iw)/2:"
+            "(oh-ih)/2,"
+            "format=yuv420p,"
+            f"tpad=stop_mode=clone:stop_duration={duration}"
+        )
+
         command = [
             "ffmpeg",
             "-y",
 
-            # Image répétée pendant toute la durée
-            "-loop",
-            "1",
             "-i",
             image_path,
 
-            # Audio
             "-i",
             audio_path,
 
-            # Durée maximale de la vidéo
+            "-filter_complex",
+            f"[0:v]{video_filter}[video]",
+
+            "-map",
+            "[video]",
+
+            "-map",
+            "1:a",
+
             "-t",
             str(duration),
 
-            # Format vertical 1080x1920
-            "-vf",
-            (
-                "scale=1080:1920:"
-                "force_original_aspect_ratio=decrease,"
-                "pad=1080:1920:"
-                "(ow-iw)/2:"
-                "(oh-ih)/2,"
-                "format=yuv420p"
-            ),
+            "-r",
+            "30",
 
-            # Encodage vidéo
             "-c:v",
             "libx264",
 
-            # Rapidité du rendu
             "-preset",
             "veryfast",
 
-            # Format compatible
             "-pix_fmt",
             "yuv420p",
 
-            # Encodage audio
             "-c:a",
             "aac",
 
             "-b:a",
             "128k",
 
-            # Coupe quand l'audio se termine
             "-shortest",
 
             output_path,
@@ -139,19 +157,20 @@ async def render_video(
             stderr=subprocess.PIPE,
         )
 
+        # Récupération des logs FFmpeg
+        stderr = result.stderr.decode(
+            errors="ignore"
+        )
+
         # Vérification du résultat
         if result.returncode != 0:
-            error_details = result.stderr.decode(
-                errors="ignore"
-            )
-
             return {
                 "status": "error",
                 "message": "FFmpeg rendering failed",
-                "details": error_details[-4000:],
+                "details": stderr[-5000:],
             }
 
-        # Vérification que la vidéo existe
+        # Vérification du fichier vidéo
         if not os.path.exists(output_path):
             return {
                 "status": "error",
@@ -159,15 +178,17 @@ async def render_video(
             }
 
         # Vérification de la taille
-        output_size = os.path.getsize(output_path)
+        output_size = os.path.getsize(
+            output_path
+        )
 
-        if output_size == 0:
+        if output_size <= 0:
             return {
                 "status": "error",
-                "message": "Generated video is empty",
+                "message": "Generated video file is empty",
             }
 
-        # Retourne la vidéo MP4
+        # Retour de la vidéo
         return FileResponse(
             output_path,
             media_type="video/mp4",
@@ -180,6 +201,12 @@ async def render_video(
             "message": "Unexpected rendering error",
             "details": str(e),
         }
+
+    finally:
+        # Le fichier reste disponible pour FileResponse.
+        # Le système temporaire de Render sera nettoyé
+        # lorsque nécessaire.
+        pass
 
 
 if __name__ == "__main__":
@@ -194,4 +221,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=port,
-        )
+        )          
