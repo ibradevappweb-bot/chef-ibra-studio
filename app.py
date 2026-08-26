@@ -5,9 +5,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.background import BackgroundTask
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 import uvicorn
 
 
@@ -19,10 +19,6 @@ app = FastAPI(title="Chef Ibra Studio")
 # ============================================================
 
 def run_command(command):
-    """
-    Exécute une commande système et retourne :
-    code retour + sortie standard + erreur.
-    """
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -36,10 +32,15 @@ def run_command(command):
     return result.returncode, stdout, stderr
 
 
+def save_upload(upload_file, destination):
+    with open(destination, "wb") as output_file:
+        shutil.copyfileobj(
+            upload_file.file,
+            output_file,
+        )
+
+
 def get_audio_duration(audio_path):
-    """
-    Récupère la durée réelle de l'audio avec FFprobe.
-    """
     command = [
         "ffprobe",
         "-v",
@@ -55,7 +56,7 @@ def get_audio_duration(audio_path):
 
     if code != 0:
         raise RuntimeError(
-            f"Impossible de lire la durée audio: {stderr[-3000:]}"
+            f"Impossible de lire la durée audio : {stderr[-3000:]}"
         )
 
     data = json.loads(stdout)
@@ -73,31 +74,14 @@ def get_audio_duration(audio_path):
 
 
 def cleanup_directory(directory):
-    """
-    Supprime le dossier temporaire après l'envoi du fichier.
-    """
-    try:
-        shutil.rmtree(
-            directory,
-            ignore_errors=True,
-        )
-    except Exception:
-        pass
-
-
-def save_upload(upload_file, destination):
-    """
-    Sauvegarde un UploadFile sur le disque.
-    """
-    with open(destination, "wb") as output:
-        shutil.copyfileobj(
-            upload_file.file,
-            output,
-        )
+    shutil.rmtree(
+        directory,
+        ignore_errors=True,
+    )
 
 
 # ============================================================
-# PAGE DE SANTÉ
+# TEST DU SERVEUR
 # ============================================================
 
 @app.get("/")
@@ -112,40 +96,30 @@ def health():
 
 
 # ============================================================
-# INFORMATIONS DU STUDIO
+# INFORMATIONS
 # ============================================================
 
 @app.get("/info")
-def studio_info():
+def info():
     return {
         "service": "Chef Ibra Studio",
-        "version": "2.0",
         "engine": "FFmpeg",
         "input": {
             "images": "multiple",
-            "audio": "one audio file",
+            "audio": "one file",
         },
         "output": {
             "format": "MP4",
             "resolution": "1080x1920",
-            "orientation": "vertical 9:16",
+            "orientation": "9:16",
             "video_codec": "H.264",
             "audio_codec": "AAC",
         },
-        "workflow": [
-            "receive images",
-            "receive audio",
-            "create scenes",
-            "assemble scenes",
-            "add audio",
-            "render final MP4",
-            "return final video",
-        ],
     }
 
 
 # ============================================================
-# RENDER VIDEO
+# MOTEUR DE RENDU
 # ============================================================
 
 @app.post("/render")
@@ -154,21 +128,6 @@ async def render_video(
     images: list[UploadFile] = File(...),
     duration: float = Form(0),
 ):
-    """
-    Moteur principal du Studio.
-
-    Entrées :
-        audio   = voix/audio principal
-        images  = plusieurs images
-        duration = durée totale optionnelle
-
-    Si duration = 0 :
-        la durée réelle de l'audio est utilisée.
-
-    Sortie :
-        chef-ibra-video.mp4
-    """
-
     workdir = tempfile.mkdtemp(
         prefix="chef_ibra_"
     )
@@ -176,7 +135,7 @@ async def render_video(
     try:
 
         # ----------------------------------------------------
-        # 1. VÉRIFICATION DES IMAGES
+        # VÉRIFICATION DES IMAGES
         # ----------------------------------------------------
 
         if not images:
@@ -188,12 +147,8 @@ async def render_video(
         if len(images) > 100:
             return {
                 "status": "error",
-                "message": "Maximum 100 images par vidéo.",
+                "message": "Maximum 100 images.",
             }
-
-        # ----------------------------------------------------
-        # 2. EXTENSIONS AUTORISÉES
-        # ----------------------------------------------------
 
         allowed_extensions = {
             ".jpg",
@@ -204,7 +159,7 @@ async def render_video(
         }
 
         # ----------------------------------------------------
-        # 3. SAUVEGARDE AUDIO
+        # SAUVEGARDE AUDIO
         # ----------------------------------------------------
 
         audio_name = (
@@ -232,50 +187,39 @@ async def render_video(
         )
 
         # ----------------------------------------------------
-        # 4. DURÉE AUDIO
+        # DURÉE AUDIO
         # ----------------------------------------------------
 
         audio_duration = get_audio_duration(
             audio_path
         )
 
-        # ----------------------------------------------------
-        # 5. DURÉE FINALE
-        # ----------------------------------------------------
-
-        if duration is None:
-            duration = 0
-
-        duration = float(duration)
+        # Si aucune durée n'est donnée,
+        # utiliser automatiquement celle de l'audio.
 
         if duration <= 0:
             duration = audio_duration
 
-        if duration <= 0:
-            return {
-                "status": "error",
-                "message": "La durée finale est invalide.",
-            }
+        # Ne jamais dépasser l'audio.
 
-        # Ne jamais dépasser la durée audio.
         if duration > audio_duration:
             duration = audio_duration
 
         # ----------------------------------------------------
-        # 6. SAUVEGARDE DES IMAGES
+        # SAUVEGARDE DES IMAGES
         # ----------------------------------------------------
 
         image_paths = []
 
         for index, image in enumerate(images):
 
-            original_name = (
+            filename = (
                 image.filename
                 or f"image_{index + 1}.jpg"
             )
 
             extension = (
-                Path(original_name)
+                Path(filename)
                 .suffix
                 .lower()
             )
@@ -298,28 +242,28 @@ async def render_video(
             )
 
         # ----------------------------------------------------
-        # 7. CALCUL DE LA DURÉE DE CHAQUE SCÈNE
+        # DURÉE DE CHAQUE IMAGE
         # ----------------------------------------------------
 
-        number_of_images = len(
+        image_count = len(
             image_paths
         )
 
         scene_duration = (
-            duration / number_of_images
+            duration / image_count
         )
 
         if scene_duration < 0.5:
             return {
                 "status": "error",
                 "message": (
-                    "Il y a trop d'images "
-                    "pour la durée de la vidéo."
+                    "La durée est trop courte "
+                    "pour autant d'images."
                 ),
             }
 
         # ----------------------------------------------------
-        # 8. CRÉATION DES INPUTS FFMPEG
+        # CONSTRUCTION DE LA COMMANDE FFMPEG
         # ----------------------------------------------------
 
         command = [
@@ -327,8 +271,9 @@ async def render_video(
             "-y",
         ]
 
-        for image_path in image_paths:
+        # Chaque image devient une petite séquence vidéo.
 
+        for image_path in image_paths:
             command.extend(
                 [
                     "-loop",
@@ -340,7 +285,10 @@ async def render_video(
                 ]
             )
 
-        # Audio
+        # Audio en dernier input.
+
+        audio_input_index = image_count
+
         command.extend(
             [
                 "-i",
@@ -349,13 +297,13 @@ async def render_video(
         )
 
         # ----------------------------------------------------
-        # 9. CONSTRUCTION DU FILTER COMPLEX
+        # FILTRES VIDÉO
         # ----------------------------------------------------
 
         filters = []
 
         for index in range(
-            number_of_images
+            image_count
         ):
 
             filters.append(
@@ -372,32 +320,37 @@ async def render_video(
             )
 
         # ----------------------------------------------------
-        # 10. CONCATÉNATION DES SCÈNES
+        # CONCATÉNATION
         # ----------------------------------------------------
 
         concat_inputs = ""
 
         for index in range(
-            number_of_images
+            image_count
         ):
             concat_inputs += (
                 f"[scene{index}]"
             )
 
-        concat_filter = (
+        filters.append(
             concat_inputs
-            + f"concat=n={number_of_images}:"
+            + f"concat=n={image_count}:"
               "v=1:a=0,"
               "format=yuv420p"
               "[video]"
         )
 
-        filters.append(
-            concat_filter
-        )
-
         filter_complex = ";".join(
             filters
+        )
+
+        # ----------------------------------------------------
+        # FICHIER FINAL
+        # ----------------------------------------------------
+
+        output_path = os.path.join(
+            workdir,
+            "chef-ibra-video.mp4",
         )
 
         command.extend(
@@ -409,7 +362,7 @@ async def render_video(
                 "[video]",
 
                 "-map",
-                f"{number_of_images}:a",
+                f"{audio_input_index}:a",
 
                 "-t",
                 f"{duration:.3f}",
@@ -443,20 +396,13 @@ async def render_video(
 
                 "-movflags",
                 "+faststart",
+
+                output_path,
             ]
         )
 
-        output_path = os.path.join(
-            workdir,
-            "chef-ibra-video.mp4",
-        )
-
-        command.append(
-            output_path
-        )
-
         # ----------------------------------------------------
-        # 11. EXÉCUTION FFmpeg
+        # EXÉCUTION
         # ----------------------------------------------------
 
         code, stdout, stderr = run_command(
@@ -464,10 +410,13 @@ async def render_video(
         )
 
         # ----------------------------------------------------
-        # 12. ERREUR FFmpeg
+        # ERREUR FFmpeg
         # ----------------------------------------------------
 
         if code != 0:
+            cleanup_directory(
+                workdir
+            )
 
             return {
                 "status": "error",
@@ -476,12 +425,16 @@ async def render_video(
             }
 
         # ----------------------------------------------------
-        # 13. VÉRIFICATION FICHIER
+        # VÉRIFICATION DU FICHIER
         # ----------------------------------------------------
 
         if not os.path.exists(
             output_path
         ):
+            cleanup_directory(
+                workdir
+            )
+
             return {
                 "status": "error",
                 "message": (
@@ -490,21 +443,24 @@ async def render_video(
                 ),
             }
 
-        output_size = os.path.getsize(
+        file_size = os.path.getsize(
             output_path
         )
 
-        if output_size <= 0:
+        if file_size <= 0:
+            cleanup_directory(
+                workdir
+            )
+
             return {
                 "status": "error",
                 "message": (
-                    "La vidéo finale "
-                    "est vide."
+                    "La vidéo finale est vide."
                 ),
             }
 
         # ----------------------------------------------------
-        # 14. RÉPONSE POUR PUBLISH
+        # RETOUR DE LA VRAIE VIDÉO
         # ----------------------------------------------------
 
         cleanup = BackgroundTask(
@@ -519,7 +475,7 @@ async def render_video(
             background=cleanup,
         )
 
-    except Exception as e:
+    except Exception as error:
 
         cleanup_directory(
             workdir
@@ -527,11 +483,8 @@ async def render_video(
 
         return {
             "status": "error",
-            "message": (
-                "Erreur pendant "
-                "le rendu vidéo."
-            ),
-            "details": str(e),
+            "message": "Erreur de rendu vidéo.",
+            "details": str(error),
         }
 
 
@@ -552,4 +505,4 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=port,
-)
+    )
