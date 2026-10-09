@@ -42,6 +42,7 @@ function persistJob(job) {
 }
 
 function loadJob(id) {
+  if (typeof id !== "string" || !/^[a-z0-9_-]{1,70}$/.test(id)) return null;
   if (jobs.has(id)) return jobs.get(id);
   const target = path.join(JOBS_DIR, id + ".json");
   if (!fs.existsSync(target)) return null;
@@ -77,7 +78,10 @@ app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     tokenConfigured: Boolean(TOKEN),
-    dataDirectoryWritable: fs.existsSync(DATA_DIR),
+    dataDirectoryWritable: (() => {
+      try { fs.accessSync(DATA_DIR, fs.constants.W_OK); return true; }
+      catch { return false; }
+    })(),
     gflowProfile: PROFILE,
     activeJobId: runningJobId
   });
