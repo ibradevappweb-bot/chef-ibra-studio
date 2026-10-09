@@ -91,8 +91,3 @@ jobs:
           echo "Vérification terminée : Chrome et gflow-cli ont été testés."
           echo "Le diagnostic doctor est volontairement exclu : il exige une session Google Flow déjà connectée."
           echo "Aucune connexion Google ni génération vidéo n’a été lancée sur ce serveur temporaire."
-        if: always()
-        run: |
-          echo "Diagnostic terminé."
-          echo "Aucune connexion Google n'a été tentée."
-          echo "Aucune génération vidéo n'a été lancée."
