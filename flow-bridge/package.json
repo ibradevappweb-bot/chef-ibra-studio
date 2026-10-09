@@ -1,0 +1,16 @@
+{
+  "name": "ibra-google-flow-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Authenticated HTTP bridge from n8n to gflow-cli",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
