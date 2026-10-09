@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { WebSocket, WebSocketServer } = require("ws");
 const storage = require("./storage");
 let persistenceState = { configured: storage.configured(), profileRestored: false, lastProfileBackup: null, lastVideoBackup: null, warning: null };
 
@@ -19,6 +20,9 @@ const MODEL = process.env.GFLOW_VIDEO_MODEL || "Veo 3.1 - Lite";
 const MAX_PROMPT_LENGTH = 12000;
 const jobs = new Map();
 let runningJobId = null;
+const remoteSessions = new Map();
+let loginProcess = null;
+const REMOTE_SESSION_TTL_MS = 30 * 60 * 1000;
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 fs.mkdirSync(JOBS_DIR, { recursive: true });
@@ -71,6 +75,68 @@ function publicJob(job) {
     videoUrl: job.status === "completed" ? "/jobs/" + encodeURIComponent(job.id) + "/video" : null
   };
 }
+
+
+function parseCookies(header = "") {
+  const result = {};
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0) result[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return result;
+}
+function validRemoteSession(req) {
+  const id = parseCookies(req.headers.cookie || "").ibra_flow_remote;
+  const expires = id ? remoteSessions.get(id) : null;
+  if (!expires || expires < Date.now()) {
+    if (id) remoteSessions.delete(id);
+    return false;
+  }
+  return true;
+}
+function requireRemoteSession(req, res, next) {
+  if (!validRemoteSession(req)) return res.status(401).send("Session distante expirée. Revenez à /remote et reconnectez-vous.");
+  next();
+}
+app.get("/remote", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(`<!doctype html><html lang="fr"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion Google Flow — IBRA</title>
+  <body style="font:16px system-ui;max-width:520px;margin:35px auto;padding:18px;background:#f5f6f8;color:#172033">
+  <h2>Connexion sécurisée Google Flow</h2><p>Cette page ouvre le navigateur du pont. Le jeton n'est pas enregistré dans le navigateur distant.</p>
+  <label for="token">Jeton privé du pont</label><input id="token" type="password" autocomplete="off" style="display:block;width:100%;box-sizing:border-box;padding:12px;margin:8px 0 14px">
+  <button id="connect" style="padding:12px 18px">Ouvrir la session sécurisée</button><p id="msg"></p>
+  <script>const b=document.getElementById('connect'),m=document.getElementById('msg');b.onclick=async()=>{b.disabled=true;m.textContent='Vérification…';try{const r=await fetch('/remote/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:document.getElementById('token').value})});if(!r.ok)throw new Error('Jeton incorrect ou service indisponible');document.getElementById('token').value='';location.href='/remote/login';}catch(e){m.textContent=e.message;b.disabled=false}}</script></body></html>`);
+});
+app.post("/remote/session", (req, res) => {
+  const supplied = typeof req.body?.token === "string" ? req.body.token : "";
+  if (!tokenIsValid({ get: name => name.toLowerCase() === "authorization" ? "Bearer " + supplied : "" })) {
+    return res.status(401).json({ error: "Jeton invalide." });
+  }
+  const id = crypto.randomBytes(32).toString("hex");
+  remoteSessions.set(id, Date.now() + REMOTE_SESSION_TTL_MS);
+  res.set("Cache-Control", "no-store");
+  res.cookie("ibra_flow_remote", id, { httpOnly: true, secure: true, sameSite: "strict", maxAge: REMOTE_SESSION_TTL_MS, path: "/" });
+  res.json({ ok: true, expiresInMinutes: 30 });
+});
+app.get("/remote/login", requireRemoteSession, (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(`<!doctype html><html lang="fr"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Flow</title><body style="font:16px system-ui;padding:24px;max-width:600px;margin:auto"><h2>Navigateur Google Flow</h2><p>Appuyez sur le bouton. Chrome s'ouvrira dans la fenêtre distante. Connectez-vous vous-même à Google Flow.</p><button id="go" style="padding:14px">Lancer Chrome pour se connecter</button><p id="status"></p><script>document.getElementById('go').onclick=async()=>{const b=document.getElementById('go'),s=document.getElementById('status');b.disabled=true;s.textContent='Démarrage de Chrome…';const r=await fetch('/remote/start-login',{method:'POST'});if(!r.ok){s.textContent='Impossible de lancer Chrome. Consultez les journaux du pont.';b.disabled=false;return}location.href='/remote/vnc.html?autoconnect=true&resize=scale&path=websockify';}</script></body></html>`);
+});
+app.post("/remote/start-login", requireRemoteSession, (_req, res) => {
+  if (loginProcess) return res.status(409).json({ error: "La connexion Chrome est déjà en cours." });
+  if (runningJobId) return res.status(409).json({ error: "Attendez la fin de la génération vidéo avant de vous connecter." });
+  loginProcess = spawn("gflow", ["auth", "login", "--profile", PROFILE], {
+    cwd: DATA_DIR,
+    env: { ...process.env, DISPLAY: ":99", GFLOW_CHROME_PATH: process.env.GFLOW_CHROME_PATH || "/usr/bin/google-chrome" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  loginProcess.stdout.on("data", c => console.log("[gflow-auth]", c.toString().slice(0, 1000)));
+  loginProcess.stderr.on("data", c => console.log("[gflow-auth]", c.toString().slice(0, 1000)));
+  loginProcess.on("error", e => { console.error("[gflow-auth] launch error:", e.message); loginProcess = null; });
+  loginProcess.on("close", code => { console.log("[gflow-auth] finished with code", code); loginProcess = null; });
+  res.status(202).json({ ok: true, message: "Chrome est en cours de démarrage." });
+});
+app.use("/remote", express.static("/usr/share/novnc", { index: false, fallthrough: true, dotfiles: "deny" }));
 
 app.get("/", (_req, res) => {
   res.json({ name: "IBRA Google Flow Bridge", status: "online", endpoints: ["GET /health", "POST /jobs", "GET /jobs/:id", "GET /jobs/:id/video"] });
@@ -241,8 +307,40 @@ async function start() {
   } else {
     persistenceState.warning = "Persistance inactive: ajouter SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY dans Render.";
   }
-  app.listen(PORT, "0.0.0.0", () => {
+
+  const server = require("node:http").createServer(app);
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  server.on("upgrade", (req, socket, head) => {
+    const pathname = new URL(req.url, "http://localhost").pathname;
+    if (pathname !== "/websockify" || !validRemoteSession(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\\r\\nConnection: close\\r\\n\\r\\n");
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, client => {
+      const upstream = new WebSocket("ws://127.0.0.1:6080/websockify", { perMessageDeflate: false });
+      const pending = [];
+      client.on("message", (data, isBinary) => {
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+        else pending.push([data, isBinary]);
+      });
+      upstream.on("open", () => { for (const [data, isBinary] of pending) upstream.send(data, { binary: isBinary }); pending.length = 0; });
+      upstream.on("message", (data, isBinary) => { if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary }); });
+      const closeBoth = () => { if (client.readyState < WebSocket.CLOSING) client.close(); if (upstream.readyState < WebSocket.CLOSING) upstream.close(); };
+      client.on("close", closeBoth); upstream.on("close", closeBoth);
+      client.on("error", closeBoth); upstream.on("error", closeBoth);
+    });
+  });
+  server.listen(PORT, "0.0.0.0", () => {
     console.log("IBRA Google Flow Bridge listening on port " + PORT);
+    const xvfb = spawn("Xvfb", [":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"], { stdio: "ignore" });
+    xvfb.on("error", e => console.error("[remote-browser] Xvfb failed:", e.message));
+    setTimeout(() => {
+      const vnc = spawn("x11vnc", ["-display", ":99", "-localhost", "-forever", "-shared", "-rfbport", "5900", "-nopw", "-quiet"], { stdio: "ignore" });
+      vnc.on("error", e => console.error("[remote-browser] x11vnc failed:", e.message));
+      const proxy = spawn("websockify", ["--web", "/usr/share/novnc", "6080", "127.0.0.1:5900"], { stdio: "ignore" });
+      proxy.on("error", e => console.error("[remote-browser] websockify failed:", e.message));
+    }, 1200);
   });
 }
 start().catch(err => {
