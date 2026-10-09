@@ -1,0 +1,45 @@
+name: Test environnement Google Flow (sans génération)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-environment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Vérifier Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Installer gflow-cli
+        run: npm install --global @swissmarley/gflow-cli
+
+      - name: Vérifier gflow-cli
+        run: gflow --help
+
+      - name: Vérifier Chrome pour ordinateur
+        shell: bash
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || true)"
+          if [ -z "$CHROME_PATH" ]; then
+            echo "::error::Aucun exécutable Google Chrome trouvé sur le runner GitHub."
+            exit 1
+          fi
+          echo "Chrome trouvé : $CHROME_PATH"
+          "$CHROME_PATH" --version
+          echo "GFLOW_CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+
+      - name: Vérifier que Flow est joignable (sans connexion)
+        run: |
+          curl -sSIL --max-time 25 https://flow.google.com/ | head -20
+
+      - name: Résumé
+        run: |
+          echo "Test terminé : CLI, Chrome distant et accès réseau vérifiés."
+          echo "Aucune connexion Google n'a été tentée."
+          echo "Aucune génération vidéo n'a été lancée."
