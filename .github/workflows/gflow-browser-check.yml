@@ -85,9 +85,16 @@ jobs:
           gflow auth --help
           echo "Commandes d’authentification disponibles."
 
+      - name: Vérifier les options de génération vidéo sans lancer de vidéo
+        shell: bash
+        run: |
+          gflow video --help
+          echo "Options de génération vidéo affichées ; aucune vidéo n’a été générée."
+
       - name: Résumé
         if: always()
         run: |
           echo "Vérification terminée : Chrome et gflow-cli ont été testés."
           echo "Le diagnostic doctor est volontairement exclu : il exige une session Google Flow déjà connectée."
           echo "Aucune connexion Google ni génération vidéo n’a été lancée sur ce serveur temporaire."
+          echo "Le test des options vidéo vérifie seulement la commande ; il ne prouve pas que la session Google est authentifiée."
