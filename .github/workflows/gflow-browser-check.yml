@@ -1,4 +1,4 @@
-name: Test navigateur gflow-cli (sans connexion ni génération)
+name: Vérifier Chrome et gflow-cli (sans session Google)
 
 on:
   workflow_dispatch:
@@ -79,13 +79,18 @@ jobs:
             exit 1
           ' bash "$PROFILE_DIR" "$LOG_FILE"
 
-      - name: Diagnostic gflow-cli avec écran virtuel
+      - name: Vérifier les commandes d’authentification sans lancer de connexion
         shell: bash
         run: |
-          echo "GFLOW_CHROME_PATH=$GFLOW_CHROME_PATH"
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" gflow doctor
+          gflow auth --help
+          echo "Commandes d’authentification disponibles."
 
       - name: Résumé
+        if: always()
+        run: |
+          echo "Vérification terminée : Chrome et gflow-cli ont été testés."
+          echo "Le diagnostic doctor est volontairement exclu : il exige une session Google Flow déjà connectée."
+          echo "Aucune connexion Google ni génération vidéo n’a été lancée sur ce serveur temporaire."
         if: always()
         run: |
           echo "Diagnostic terminé."
