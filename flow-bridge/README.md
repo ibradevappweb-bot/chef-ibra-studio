@@ -7,7 +7,8 @@ HTTP bridge intended for n8n to submit a prompt to the unofficial `gflow-cli`, g
 - This service does **not** bypass Google sign-in, 2FA, CAPTCHA, Flow credits, or usage limits.
 - The Google account must be signed in to Google Flow in the same Chrome profile used by `gflow-cli`.
 - A persistent data volume mounted at `/data` is required to preserve the browser profile and downloaded MP4 files across restarts.
-- This initial container does not provide an interactive browser-login screen. It is not ready for real generation until a safe, interactive first-login method is added and the profile is verified with `gflow doctor`.
+- The development branch adds a token-gated remote Chrome screen at `/remote`, using noVNC over the same public HTTPS port. The browser session is limited to 30 minutes and the VNC/RFB port is bound to localhost behind the authenticated WebSocket proxy.
+- This interface still needs a successful Render build and live test before it is considered installed. The login must be completed by the account owner; it does not bypass Google sign-in, CAPTCHA, 2FA, or account checks.
 - Never commit Google cookies, browser profiles, passwords, or session tokens to GitHub.
 
 ## Environment
@@ -45,6 +46,15 @@ Returns HTTP 202 with the job ID and status URL.
 ### Download MP4
 
 `GET /jobs/clip-001/video`
+
+### Remote first login (development branch only)
+
+1. Open `https://<service-host>/remote` in your phone browser.
+2. Enter the existing `FLOW_BRIDGE_TOKEN` in the password field. Do not send it in chat.
+3. Tap **Lancer Chrome pour se connecter** and complete Google sign-in in the displayed Chrome window.
+4. The remote session expires after 30 minutes. The `/remote` route is available only on this development branch until reviewed and deployed.
+
+The remote desktop uses Xvfb, x11vnc (localhost-only), noVNC, websockify, and an authenticated WebSocket proxy. Do not deploy before a Docker build and security test.
 
 ### Health
 
