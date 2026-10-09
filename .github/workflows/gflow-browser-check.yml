@@ -9,12 +9,17 @@ permissions:
 jobs:
   browser-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Configurer Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - name: Installer un écran virtuel pour Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes xvfb
 
       - name: Installer gflow-cli
         run: npm install --global @swissmarley/gflow-cli
@@ -31,20 +36,16 @@ jobs:
           "$CHROME_PATH" --version
           echo "GFLOW_CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
           echo "CHROME_BIN=$CHROME_PATH" >> "$GITHUB_ENV"
-          echo "GFLOW_CHROME_PATH configuré pour les étapes suivantes."
 
       - name: Vérifier les commandes gflow-cli
         run: gflow --help
 
-      - name: Diagnostic gflow-cli
+      - name: Diagnostic gflow-cli avec écran virtuel
         shell: bash
         run: |
-          set +e
           echo "GFLOW_CHROME_PATH=$GFLOW_CHROME_PATH"
-          gflow doctor 2>&1 | tee gflow-doctor.log
-          STATUS=${PIPESTATUS[0]}
-          echo "Code de sortie de gflow doctor : $STATUS"
-          exit 0
+          echo "DISPLAY sera fourni par xvfb-run."
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" gflow doctor
 
       - name: Résumé
         if: always()
