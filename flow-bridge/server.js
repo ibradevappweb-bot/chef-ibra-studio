@@ -412,7 +412,7 @@ async function start() {
       child.on("error", err => console.error(`[remote-browser:${name}] spawn error:`, err.message));
       child.on("exit", (code, signal) => console.error(`[remote-browser:${name}] exited: code=${code} signal=${signal}`));
     }
-    const xvfb = spawn("Xvfb", [":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"], { stdio: ["ignore", "pipe", "pipe"] });
+    const xvfb = spawn("Xvfb", [":99", "-screen", "0", "1024x768x16", "-nolisten", "tcp"], { stdio: ["ignore", "pipe", "pipe"] });
     monitorChild("Xvfb", xvfb);
     setTimeout(() => {
       const vnc = spawn("x11vnc", ["-display", ":99", "-localhost", "-forever", "-shared", "-rfbport", "5900", "-nopw"], { stdio: ["ignore", "pipe", "pipe"] });
