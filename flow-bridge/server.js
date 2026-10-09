@@ -382,14 +382,20 @@ async function start() {
   });
   server.listen(PORT, "0.0.0.0", () => {
     console.log("IBRA Google Flow Bridge listening on port " + PORT);
-    const xvfb = spawn("Xvfb", [":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"], { stdio: "ignore" });
-    xvfb.on("error", e => console.error("[remote-browser] Xvfb failed:", e.message));
+    function monitorChild(name, child) {
+      child.stdout?.on("data", chunk => console.log(`[remote-browser:${name}:stdout]`, chunk.toString().trim().slice(0, 1200)));
+      child.stderr?.on("data", chunk => console.warn(`[remote-browser:${name}:stderr]`, chunk.toString().trim().slice(0, 1200)));
+      child.on("error", err => console.error(`[remote-browser:${name}] spawn error:`, err.message));
+      child.on("exit", (code, signal) => console.error(`[remote-browser:${name}] exited: code=${code} signal=${signal}`));
+    }
+    const xvfb = spawn("Xvfb", [":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"], { stdio: ["ignore", "pipe", "pipe"] });
+    monitorChild("Xvfb", xvfb);
     setTimeout(() => {
-      const vnc = spawn("x11vnc", ["-display", ":99", "-localhost", "-forever", "-shared", "-rfbport", "5900", "-nopw", "-quiet"], { stdio: "ignore" });
-      vnc.on("error", e => console.error("[remote-browser] x11vnc failed:", e.message));
-      const proxy = spawn("websockify", ["--web", "/usr/share/novnc", "6080", "127.0.0.1:5900"], { stdio: "ignore" });
-      proxy.on("error", e => console.error("[remote-browser] websockify failed:", e.message));
-    }, 1200);
+      const vnc = spawn("x11vnc", ["-display", ":99", "-localhost", "-forever", "-shared", "-rfbport", "5900", "-nopw"], { stdio: ["ignore", "pipe", "pipe"] });
+      monitorChild("x11vnc", vnc);
+      const proxy = spawn("websockify", ["--web", "/usr/share/novnc", "6080", "127.0.0.1:5900"], { stdio: ["ignore", "pipe", "pipe"] });
+      monitorChild("websockify", proxy);
+    }, 2500);
   });
 }
 start().catch(err => {
