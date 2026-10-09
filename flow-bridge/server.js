@@ -3,6 +3,8 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const storage = require("./storage");
+let persistenceState = { configured: storage.configured(), profileRestored: false, lastProfileBackup: null, lastVideoBackup: null, warning: null };
 
 const app = express();
 app.use(express.json({ limit: "32kb" }));
@@ -83,7 +85,12 @@ app.get("/health", (_req, res) => {
       catch { return false; }
     })(),
     gflowProfile: PROFILE,
-    activeJobId: runningJobId
+    activeJobId: runningJobId,
+    supabaseStorageConfigured: storage.configured(),
+    profileRestored: persistenceState.profileRestored,
+    lastProfileBackup: persistenceState.lastProfileBackup,
+    lastVideoBackup: persistenceState.lastVideoBackup,
+    persistenceWarning: persistenceState.warning
   });
 });
 
@@ -144,7 +151,7 @@ app.post("/jobs", requireToken, (req, res) => {
     runningJobId = null;
   });
 
-  child.on("close", code => {
+  child.on("close", async code => {
     if (job.status === "failed" && job.finishedAt) return;
     const expected = path.join(OUT_DIR, id + "-001.mp4");
     const found = fs.existsSync(expected) ? expected : null;
@@ -155,6 +162,32 @@ app.post("/jobs", requireToken, (req, res) => {
     job.outputFile = found;
     job.finishedAt = new Date().toISOString();
     job.diagnostic = logs;
+    if (found && storage.configured()) {
+      try {
+        const savedVideo = await storage.uploadVideo(found, id);
+        if (savedVideo.saved) {
+          job.storageVideoPath = savedVideo.path;
+          persistenceState.lastVideoBackup = new Date().toISOString();
+        } else {
+          persistenceState.warning = "Vidéo non sauvegardée dans Supabase: " + savedVideo.reason;
+        }
+      } catch (err) {
+        persistenceState.warning = "Sauvegarde vidéo Supabase échouée: " + err.message;
+      }
+    }
+    if (storage.configured()) {
+      try {
+        const savedProfile = await storage.backupProfile();
+        if (savedProfile.saved) {
+          persistenceState.lastProfileBackup = new Date().toISOString();
+          persistenceState.warning = null;
+        } else if (savedProfile.reason !== "profile_missing") {
+          persistenceState.warning = "Profil Google Flow non sauvegardé: " + savedProfile.reason;
+        }
+      } catch (err) {
+        persistenceState.warning = "Sauvegarde du profil Google Flow échouée: " + err.message;
+      }
+    }
     persistJob(job);
     runningJobId = null;
   });
@@ -166,13 +199,24 @@ app.get("/jobs/:id", requireToken, (req, res) => {
   res.json(publicJob(job));
 });
 
-app.get("/jobs/:id/video", requireToken, (req, res) => {
+app.get("/jobs/:id/video", requireToken, async (req, res) => {
   const job = loadJob(req.params.id);
   if (!job) return res.status(404).json({ error: "Tâche introuvable." });
-  if (job.status !== "completed" || !job.outputFile || !fs.existsSync(job.outputFile)) {
-    return res.status(409).json({ error: "La vidéo n'est pas encore disponible." });
+  if (job.status !== "completed") return res.status(409).json({ error: "La vidéo n'est pas encore disponible." });
+  if (job.outputFile && fs.existsSync(job.outputFile)) return res.download(job.outputFile, job.id + ".mp4");
+  if (job.storageVideoPath && storage.configured()) {
+    try {
+      const video = await storage.downloadVideo(job.storageVideoPath);
+      if (video) {
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Content-Disposition", 'attachment; filename="' + job.id + '.mp4"');
+        return res.send(video);
+      }
+    } catch (err) {
+      return res.status(502).json({ error: "Impossible de récupérer la vidéo sauvegardée.", detail: err.message });
+    }
   }
-  res.download(job.outputFile, job.id + ".mp4");
+  return res.status(409).json({ error: "La vidéo n'est pas disponible localement ni dans Supabase." });
 });
 
 app.get("/jobs/:id/log", requireToken, (req, res) => {
@@ -181,6 +225,27 @@ app.get("/jobs/:id/log", requireToken, (req, res) => {
   res.json({ id: job.id, status: job.status, error: job.error, diagnostic: job.diagnostic || "" });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("IBRA Google Flow Bridge listening on port " + PORT);
+async function start() {
+  if (storage.configured()) {
+    try {
+      const restored = await storage.restoreProfile();
+      persistenceState.profileRestored = restored.restored;
+      if (!restored.restored && restored.reason === "no_backup_yet") {
+        persistenceState.warning = "Aucun profil Google Flow sauvegardé. Une première connexion manuelle reste nécessaire.";
+      }
+      console.log("Supabase profile restore: " + restored.reason);
+    } catch (err) {
+      persistenceState.warning = "Restauration du profil Google Flow échouée: " + err.message;
+      console.error(persistenceState.warning);
+    }
+  } else {
+    persistenceState.warning = "Persistance inactive: ajouter SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY dans Render.";
+  }
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log("IBRA Google Flow Bridge listening on port " + PORT);
+  });
+}
+start().catch(err => {
+  console.error("Startup error:", err.message);
+  app.listen(PORT, "0.0.0.0");
 });
