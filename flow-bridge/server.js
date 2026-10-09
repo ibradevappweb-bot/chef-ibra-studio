@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
+const { WebSocket, WebSocketServer } = require("ws");
 const storage = require("./storage");
 let persistenceState = { configured: storage.configured(), profileRestored: false, lastProfileBackup: null, lastVideoBackup: null, warning: null };
 
@@ -347,10 +348,9 @@ async function start() {
   }
 
   const server = require("node:http").createServer(app);
-  // x11vnc supports WebSocket handshakes on its own VNC port. Keep the
-  // browser's HTTP Upgrade handshake intact and tunnel raw socket bytes.
-  // Terminating WebSocket here strips that handshake and makes x11vnc reject
-  // the connection as an invalid WebSocket client header.
+  // Authenticate the browser connection here, then relay WebSocket frames
+  // through websockify, which performs the WebSocket-to-VNC conversion.
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 2 * 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     const parsedUrl = new URL(req.url, "http://localhost");
     const pathname = parsedUrl.pathname;
@@ -359,62 +359,50 @@ async function start() {
     const ticketOk = allowedPath && consumeRemoteWsTicket(parsedUrl.searchParams.get("ticket"));
     if (!allowedPath || (!sessionOk && !ticketOk)) {
       console.warn("[remote-vnc] WebSocket upgrade rejected:", JSON.stringify({ pathname, sessionOk, ticketOk }));
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      socket.write("HTTP/1.1 401 Unauthorized\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n");
       socket.destroy();
       return;
     }
-
-    const upstream = net.createConnection({ host: "127.0.0.1", port: 5900 });
-    let upgraded = false;
-    let responseBuffer = Buffer.alloc(0);
-    upstream.setTimeout(15000);
-    upstream.on("connect", () => {
-      const headers = { ...req.headers };
-      headers.host = "127.0.0.1:5900";
-      headers.connection = "Upgrade";
-      headers.upgrade = "websocket";
-      delete headers.cookie;
-      const requestLines = ["GET / HTTP/1.1"];
-      for (const [name, value] of Object.entries(headers)) {
-        if (value === undefined) continue;
-        requestLines.push(name + ": " + (Array.isArray(value) ? value.join(", ") : value));
-      }
-      upstream.write(requestLines.join("\r\n") + "\r\n\r\n");
-      if (head && head.length) upstream.write(head);
-      socket.pipe(upstream);
-      upstream.pipe(socket);
-      console.log("[remote-vnc] Transparent WebSocket tunnel connected to x11vnc:5900");
-    });
-    upstream.on("data", data => {
-      if (!upgraded) {
-        responseBuffer = Buffer.concat([responseBuffer, data]).subarray(0, 4096);
-        if (responseBuffer.toString("latin1").includes("101 Switching Protocols")) {
-          upgraded = true;
-          console.log("[remote-vnc] x11vnc accepted the WebSocket handshake");
-        } else if (responseBuffer.includes(Buffer.from("\r\n\r\n"))) {
-          const firstLine = responseBuffer.toString("latin1").split("\r\n", 1)[0];
-          if (!firstLine.includes("101")) console.error("[remote-vnc] x11vnc rejected WebSocket handshake:", firstLine);
-          upgraded = true;
+    wss.handleUpgrade(req, socket, head, browser => {
+      const upstream = new WebSocket("ws://127.0.0.1:6080/websockify", "binary", {
+        handshakeTimeout: 10000,
+        perMessageDeflate: false,
+        maxPayload: 2 * 1024 * 1024
+      });
+      let upstreamOpened = false;
+      const closeBoth = () => {
+        if (browser.readyState === WebSocket.OPEN || browser.readyState === WebSocket.CONNECTING) browser.terminate();
+        if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.terminate();
+      };
+      upstream.on("open", () => {
+        upstreamOpened = true;
+        console.log("[remote-vnc] Browser WebSocket relayed through websockify:6080");
+      });
+      browser.on("message", (data, isBinary) => {
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+      });
+      upstream.on("message", (data, isBinary) => {
+        if (browser.readyState === WebSocket.OPEN) browser.send(data, { binary: isBinary });
+      });
+      upstream.on("error", err => console.error("[remote-vnc] websockify connection failed:", err.message));
+      upstream.on("close", (code, reason) => {
+        console.warn("[remote-vnc] websockify closed:", code, reason.toString().slice(0, 160));
+        if (browser.readyState === WebSocket.OPEN) browser.close();
+      });
+      browser.on("error", err => console.warn("[remote-vnc] Browser WebSocket error:", err.message));
+      browser.on("close", () => {
+        if (upstream.readyState === WebSocket.OPEN) upstream.close();
+        else if (upstream.readyState === WebSocket.CONNECTING) upstream.terminate();
+      });
+      const timer = setTimeout(() => {
+        if (!upstreamOpened) {
+          console.error("[remote-vnc] websockify connection timed out");
+          closeBoth();
         }
-      }
+      }, 12000);
+      timer.unref();
+      upstream.once("open", () => clearTimeout(timer));
     });
-    upstream.on("timeout", () => {
-      console.error("[remote-vnc] VNC handshake timed out");
-      upstream.destroy();
-      socket.destroy();
-    });
-    upstream.on("error", err => {
-      console.error("[remote-vnc] Local VNC TCP connection failed:", err.message);
-      if (!socket.destroyed) {
-        if (!upgraded) socket.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-        socket.destroy();
-      }
-    });
-    upstream.on("close", () => {
-      if (!socket.destroyed) socket.destroy();
-    });
-    socket.on("error", err => console.warn("[remote-vnc] Browser socket error:", err.message));
-    socket.on("close", () => { if (!upstream.destroyed) upstream.destroy(); });
   });
   server.listen(PORT, "0.0.0.0", () => {
     console.log("IBRA Google Flow Bridge listening on port " + PORT);
