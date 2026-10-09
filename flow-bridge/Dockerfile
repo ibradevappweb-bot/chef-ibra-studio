@@ -3,6 +3,7 @@ FROM node:22-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GFLOW_CHROME_PATH=/usr/bin/google-chrome
 ENV FLOW_DATA_DIR=/data
+ENV NODE_OPTIONS=--max-old-space-size=128
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
