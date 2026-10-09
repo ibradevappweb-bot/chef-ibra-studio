@@ -19,7 +19,7 @@ jobs:
       - name: Installer gflow-cli
         run: npm install --global @swissmarley/gflow-cli
 
-      - name: Vérifier la version de Chrome
+      - name: Détecter Chrome et configurer son chemin pour gflow-cli
         shell: bash
         run: |
           CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || true)"
@@ -29,7 +29,9 @@ jobs:
           fi
           echo "Chrome trouvé : $CHROME_PATH"
           "$CHROME_PATH" --version
+          echo "GFLOW_CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
           echo "CHROME_BIN=$CHROME_PATH" >> "$GITHUB_ENV"
+          echo "GFLOW_CHROME_PATH configuré pour les étapes suivantes."
 
       - name: Vérifier les commandes gflow-cli
         run: gflow --help
@@ -38,6 +40,7 @@ jobs:
         shell: bash
         run: |
           set +e
+          echo "GFLOW_CHROME_PATH=$GFLOW_CHROME_PATH"
           gflow doctor 2>&1 | tee gflow-doctor.log
           STATUS=${PIPESTATUS[0]}
           echo "Code de sortie de gflow doctor : $STATUS"
