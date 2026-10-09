@@ -362,36 +362,38 @@ async function start() {
       return;
     }
     wss.handleUpgrade(req, socket, head, client => {
-      // noVNC speaks RFB inside WebSocket messages; x11vnc expects raw TCP/RFB.
-      // Bridge the WebSocket payload directly to x11vnc instead of nesting a
-      // second WebSocket connection through websockify.
-      const upstream = net.createConnection({ host: "127.0.0.1", port: 5900 });
+      // Authenticate at this server, then relay the browser WebSocket to
+      // websockify. websockify performs the required WebSocket-to-RFB/TCP
+      // conversion before the data reaches x11vnc on port 5900.
+      const upstream = new WebSocket("ws://127.0.0.1:6080/websockify", ["binary"]);
       const pending = [];
       let upstreamReady = false;
-      client.on("message", (data) => {
-        if (upstreamReady && !upstream.destroyed) upstream.write(data);
-        else pending.push(data);
+      client.on("message", (data, isBinary) => {
+        if (upstreamReady && upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+        else pending.push({ data, isBinary });
       });
-      upstream.on("connect", () => {
+      upstream.on("open", () => {
         upstreamReady = true;
-        console.log("[remote-vnc] Connected directly to local VNC TCP port 5900");
-        for (const data of pending) upstream.write(data);
+        console.log("[remote-vnc] Connected to local websockify WebSocket endpoint");
+        for (const item of pending) upstream.send(item.data, { binary: item.isBinary });
         pending.length = 0;
       });
-      upstream.on("data", data => {
-        if (client.readyState === WebSocket.OPEN) client.send(data, { binary: true });
+      upstream.on("message", (data, isBinary) => {
+        if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+      });
+      upstream.on("unexpected-response", (_req, response) => {
+        console.error("[remote-vnc] websockify rejected WebSocket:", response.statusCode);
       });
       upstream.on("error", err => {
-        console.error("[remote-vnc] Local VNC TCP connection failed:", err.message);
+        console.error("[remote-vnc] Local websockify WebSocket failed:", err.message);
         if (client.readyState < WebSocket.CLOSING) client.close();
       });
-      upstream.on("close", () => {
-        console.warn("[remote-vnc] Local VNC TCP connection closed");
+      upstream.on("close", (code, reason) => {
+        console.warn("[remote-vnc] Local websockify WebSocket closed:", code, reason.toString());
         if (client.readyState < WebSocket.CLOSING) client.close();
       });
       client.on("error", err => console.error("[remote-vnc] Browser WebSocket error:", err.message));
-      client.on("close", () => { if (!upstream.destroyed) upstream.end(); });
-      client.on("error", () => { if (!upstream.destroyed) upstream.destroy(); });
+      client.on("close", () => { if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close(); });
     });
   });
   server.listen(PORT, "0.0.0.0", () => {
