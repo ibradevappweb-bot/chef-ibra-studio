@@ -1,0 +1,51 @@
+name: Test navigateur gflow-cli (sans connexion ni génération)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configurer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Installer gflow-cli
+        run: npm install --global @swissmarley/gflow-cli
+
+      - name: Vérifier la version de Chrome
+        shell: bash
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || true)"
+          if [ -z "$CHROME_PATH" ]; then
+            echo "::error::Chrome introuvable."
+            exit 1
+          fi
+          echo "Chrome trouvé : $CHROME_PATH"
+          "$CHROME_PATH" --version
+          echo "CHROME_BIN=$CHROME_PATH" >> "$GITHUB_ENV"
+
+      - name: Vérifier les commandes gflow-cli
+        run: gflow --help
+
+      - name: Diagnostic gflow-cli
+        shell: bash
+        run: |
+          set +e
+          gflow doctor 2>&1 | tee gflow-doctor.log
+          STATUS=${PIPESTATUS[0]}
+          echo "Code de sortie de gflow doctor : $STATUS"
+          exit 0
+
+      - name: Résumé
+        if: always()
+        run: |
+          echo "Diagnostic terminé."
+          echo "Aucune connexion Google n'a été tentée."
+          echo "Aucune génération vidéo n'a été lancée."
