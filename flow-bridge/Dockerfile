@@ -17,6 +17,7 @@ COPY package.json ./
 RUN npm install --omit=dev && npm install --global @swissmarley/gflow-cli
 
 COPY server.js ./
+COPY storage.js ./
 RUN mkdir -p /data/out /data/jobs && chown -R node:node /data /app
 
 USER node
