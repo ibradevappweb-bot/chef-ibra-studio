@@ -40,11 +40,49 @@ jobs:
       - name: Vérifier les commandes gflow-cli
         run: gflow --help
 
+      - name: Tester le démarrage réel de Chrome et afficher son erreur
+        shell: bash
+        run: |
+          set -u
+          PROFILE_DIR="$(mktemp -d)"
+          LOG_FILE="$RUNNER_TEMP/chrome-launch.log"
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" bash -c '
+            set -u
+            "$GFLOW_CHROME_PATH" \
+              --user-data-dir="$1" \
+              --remote-debugging-port=0 \
+              --remote-allow-origins="*" \
+              --no-first-run \
+              --no-default-browser-check \
+              --disable-blink-features=AutomationControlled \
+              about:blank >"$2" 2>&1 &
+            CHROME_PID=$!
+            for i in $(seq 1 20); do
+              if grep -q "DevTools listening" "$2" || [ -f "$1/DevToolsActivePort" ]; then
+                echo "Chrome a démarré avec un port de débogage."
+                cat "$2"
+                kill "$CHROME_PID" 2>/dev/null || true
+                wait "$CHROME_PID" 2>/dev/null || true
+                exit 0
+              fi
+              if ! kill -0 "$CHROME_PID" 2>/dev/null; then
+                echo "::error::Chrome s’est arrêté avant d’ouvrir le port de débogage."
+                cat "$2"
+                exit 1
+              fi
+              sleep 1
+            done
+            echo "::error::Chrome n’a pas ouvert le port de débogage en 20 secondes."
+            cat "$2"
+            kill "$CHROME_PID" 2>/dev/null || true
+            wait "$CHROME_PID" 2>/dev/null || true
+            exit 1
+          ' bash "$PROFILE_DIR" "$LOG_FILE"
+
       - name: Diagnostic gflow-cli avec écran virtuel
         shell: bash
         run: |
           echo "GFLOW_CHROME_PATH=$GFLOW_CHROME_PATH"
-          echo "DISPLAY sera fourni par xvfb-run."
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" gflow doctor
 
       - name: Résumé
