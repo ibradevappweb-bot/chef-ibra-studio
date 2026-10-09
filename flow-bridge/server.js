@@ -21,8 +21,10 @@ const MAX_PROMPT_LENGTH = 12000;
 const jobs = new Map();
 let runningJobId = null;
 const remoteSessions = new Map();
+const remoteWsTickets = new Map();
 let loginProcess = null;
 const REMOTE_SESSION_TTL_MS = 30 * 60 * 1000;
+const REMOTE_WS_TICKET_TTL_MS = 2 * 60 * 1000;
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 fs.mkdirSync(JOBS_DIR, { recursive: true });
@@ -98,6 +100,17 @@ function requireRemoteSession(req, res, next) {
   if (!validRemoteSession(req)) return res.status(401).send("Session distante expirée. Revenez à /remote et reconnectez-vous.");
   next();
 }
+function issueRemoteWsTicket() {
+  const ticket = crypto.randomBytes(32).toString("hex");
+  remoteWsTickets.set(ticket, Date.now() + REMOTE_WS_TICKET_TTL_MS);
+  return ticket;
+}
+function consumeRemoteWsTicket(ticket) {
+  if (typeof ticket !== "string" || !ticket) return false;
+  const expires = remoteWsTickets.get(ticket);
+  remoteWsTickets.delete(ticket);
+  return Boolean(expires && expires >= Date.now());
+}
 app.get("/remote", (_req, res) => {
   res.set("Cache-Control", "no-store");
   res.type("html").send(`<!doctype html><html lang="fr"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion Google Flow — IBRA</title>
@@ -120,7 +133,7 @@ app.post("/remote/session", (req, res) => {
 });
 app.get("/remote/login", requireRemoteSession, (_req, res) => {
   res.set("Cache-Control", "no-store");
-  res.type("html").send(`<!doctype html><html lang="fr"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Flow</title><body style="font:16px system-ui;padding:24px;max-width:600px;margin:auto"><h2>Navigateur Google Flow</h2><p>Appuyez sur le bouton. Chrome s'ouvrira dans la fenêtre distante. Connectez-vous vous-même à Google Flow.</p><button id="go" style="padding:14px">Lancer Chrome pour se connecter</button><p id="status"></p><script>document.getElementById('go').onclick=async()=>{const b=document.getElementById('go'),s=document.getElementById('status');b.disabled=true;s.textContent='Démarrage de Chrome…';const r=await fetch('/remote/start-login',{method:'POST'});if(!r.ok){s.textContent='Impossible de lancer Chrome. Consultez les journaux du pont.';b.disabled=false;return}location.href='/remote/vnc.html?autoconnect=true&resize=scale&path=websockify';}</script></body></html>`);
+  res.type("html").send(`<!doctype html><html lang="fr"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Flow</title><body style="font:16px system-ui;padding:24px;max-width:600px;margin:auto"><h2>Navigateur Google Flow</h2><p>Appuyez sur le bouton. Chrome s'ouvrira dans la fenêtre distante. Connectez-vous vous-même à Google Flow.</p><button id="go" style="padding:14px">Lancer Chrome pour se connecter</button><p id="status"></p><script>document.getElementById('go').onclick=async()=>{const b=document.getElementById('go'),s=document.getElementById('status');b.disabled=true;s.textContent='Démarrage de Chrome…';const r=await fetch('/remote/start-login',{method:'POST'});if(!r.ok){s.textContent='Impossible de lancer Chrome. Consultez les journaux du pont.';b.disabled=false;return}location.href='/remote/desktop';}</script></body></html>`);
 });
 app.post("/remote/start-login", requireRemoteSession, (_req, res) => {
   if (loginProcess) return res.status(409).json({ error: "La connexion Chrome est déjà en cours." });
@@ -135,6 +148,28 @@ app.post("/remote/start-login", requireRemoteSession, (_req, res) => {
   loginProcess.on("error", e => { console.error("[gflow-auth] launch error:", e.message); loginProcess = null; });
   loginProcess.on("close", code => { console.log("[gflow-auth] finished with code", code); loginProcess = null; });
   res.status(202).json({ ok: true, message: "Chrome est en cours de démarrage." });
+});
+app.get("/remote/desktop", requireRemoteSession, (_req, res) => {
+  const ticket = issueRemoteWsTicket();
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(`<!doctype html><html lang="fr"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bureau distant IBRA</title><style>html,body,#screen{width:100%;height:100%;margin:0;background:#171717}#status{position:fixed;z-index:2;top:8px;left:8px;max-width:90%;padding:8px 12px;background:#fff;color:#111;border-radius:6px;font:14px system-ui}#screen{display:block}</style></head><body><div id="status">Connexion sécurisée au bureau distant…</div><div id="screen"></div><script type="module">
+import RFB from '/remote/core/rfb.js';
+const status=document.getElementById('status');
+const ticket=${JSON.stringify(ticket)};
+const protocol=location.protocol==='https:'?'wss:':'ws:';
+const socketUrl=protocol+'//'+location.host+'/websockify?ticket='+encodeURIComponent(ticket);
+try {
+  const rfb=new RFB(document.getElementById('screen'),socketUrl);
+  rfb.scaleViewport=true;
+  rfb.resizeSession=true;
+  rfb.showDotCursor=true;
+  rfb.addEventListener('connect',()=>{status.textContent='Bureau distant connecté';setTimeout(()=>status.remove(),2500)});
+  rfb.addEventListener('disconnect',event=>{status.textContent='Échec de connexion au bureau distant. '+(event.detail.clean?'La session a été fermée.':'Le serveur VNC local a interrompu la connexion.');});
+  rfb.addEventListener('credentialsrequired',()=>{status.textContent='Le bureau demande des identifiants VNC inattendus.';});
+} catch (error) {
+  status.textContent='Impossible de démarrer le client du bureau : '+error.message;
+}
+</script></body></html>`);
 });
 app.use("/remote", express.static("/usr/share/novnc", { index: false, fallthrough: true, dotfiles: "deny" }));
 
@@ -311,11 +346,13 @@ async function start() {
   const server = require("node:http").createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
-    const pathname = new URL(req.url, "http://localhost").pathname;
+    const parsedUrl = new URL(req.url, "http://localhost");
+    const pathname = parsedUrl.pathname;
+    const allowedPath = ["/websockify", "/remote/websockify"].includes(pathname);
     const sessionOk = validRemoteSession(req);
-    // noVNC may request either the root endpoint or the endpoint relative to /remote.
-    if (!["/websockify", "/remote/websockify"].includes(pathname) || !sessionOk) {
-      console.warn("[remote-vnc] WebSocket upgrade rejected:", JSON.stringify({ pathname, sessionOk }));
+    const ticketOk = allowedPath && consumeRemoteWsTicket(parsedUrl.searchParams.get("ticket"));
+    if (!allowedPath || (!sessionOk && !ticketOk)) {
+      console.warn("[remote-vnc] WebSocket upgrade rejected:", JSON.stringify({ pathname, sessionOk, ticketOk }));
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
       socket.destroy();
       return;
