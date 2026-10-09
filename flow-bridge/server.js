@@ -312,8 +312,11 @@ async function start() {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     const pathname = new URL(req.url, "http://localhost").pathname;
-    if (pathname !== "/websockify" || !validRemoteSession(req)) {
-      socket.write("HTTP/1.1 401 Unauthorized\\r\\nConnection: close\\r\\n\\r\\n");
+    const sessionOk = validRemoteSession(req);
+    // noVNC may request either the root endpoint or the endpoint relative to /remote.
+    if (!["/websockify", "/remote/websockify"].includes(pathname) || !sessionOk) {
+      console.warn("[remote-vnc] WebSocket upgrade rejected:", JSON.stringify({ pathname, sessionOk }));
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -324,8 +327,14 @@ async function start() {
         if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
         else pending.push([data, isBinary]);
       });
-      upstream.on("open", () => { for (const [data, isBinary] of pending) upstream.send(data, { binary: isBinary }); pending.length = 0; });
-      upstream.on("message", (data, isBinary) => { if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary }); });
+      upstream.on("open", () => {
+        console.log("[remote-vnc] WebSocket connected to local websockify");
+        for (const [data, isBinary] of pending) upstream.send(data, { binary: isBinary });
+        pending.length = 0;
+      });
+      upstream.on("error", err => console.error("[remote-vnc] Local websockify connection failed:", err.message));
+      upstream.on("close", (code, reason) => console.warn("[remote-vnc] Local websockify closed:", code, reason.toString()));
+      client.on("error", err => console.error("[remote-vnc] Browser WebSocket error:", err.message));
       const closeBoth = () => { if (client.readyState < WebSocket.CLOSING) client.close(); if (upstream.readyState < WebSocket.CLOSING) upstream.close(); };
       client.on("close", closeBoth); upstream.on("close", closeBoth);
       client.on("error", closeBoth); upstream.on("error", closeBoth);
