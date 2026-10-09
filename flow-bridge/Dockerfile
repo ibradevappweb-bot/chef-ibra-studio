@@ -19,7 +19,10 @@ RUN npm install --omit=dev && npm install --global @swissmarley/gflow-cli
 
 COPY server.js ./
 COPY storage.js ./
-RUN mkdir -p /data/out /data/jobs && chown -R node:node /data /app
+RUN mkdir -p /data/out /data/jobs /tmp/.X11-unix \
+    && chown -R node:node /data /app \
+    && chown root:root /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix
 
 USER node
 EXPOSE 10000
