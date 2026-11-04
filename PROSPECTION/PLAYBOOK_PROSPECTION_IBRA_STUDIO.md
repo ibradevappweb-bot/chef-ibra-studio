@@ -114,3 +114,11 @@ Cette branche ne doit pas devenir une bibliothèque de production créative. Son
 - fichiers vidéo ou images de démonstration.
 
 Ces éléments doivent rester dans une branche ou un espace de travail distinct dédié à la production.
+
+## 11. Règle d'enregistrement des prompts
+
+Avant de remettre à l'utilisateur un prompt destiné à la prospection (recherche de prospects, vérification, qualification, rédaction ou analyse de messages), l'enregistrer d'abord dans cette branche, dans un fichier Markdown adapté sous `PROSPECTION/prompts/`. Vérifier ensuite que le fichier est bien présent sur GitHub, puis seulement transmettre le prompt et son lien à l'utilisateur.
+
+Ne jamais annoncer qu'un prompt est enregistré avant d'avoir confirmé l'écriture sur GitHub. Si l'enregistrement échoue, le dire clairement et ne pas prétendre qu'il a été sauvegardé.
+
+Les prompts de production (image, Google Flow, vidéo et audio) ne doivent pas être enregistrés dans cette branche de prospection : ils seront sauvegardés dans une branche de production distincte lorsqu'elle sera créée ou désignée.
